@@ -199,3 +199,14 @@ Vue 3 · Vite 8 · vite-plugin-pwa · IndexedDB
 - [ ] 导出维护报告 PDF（卖二手时用，配合 [TractorWatch](../tractor-watch) 的估价）
 - [ ] 拍照记录（维修前后对比图）
 - [ ] 多设备同步（可选，需要用户授权）
+
+---
+
+## License / 许可证
+
+MIT License — see [LICENSE](./LICENSE).
+
+Copyright (c) 2026 akk987154
+
+本项目采用 MIT 许可证，详见 [LICENSE](./LICENSE)。
+你可以自由使用、修改、分发，包括商业用途，只需保留版权声明与许可声明。
