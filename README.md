@@ -3,15 +3,31 @@
 <!--
   这应该是所有项目里迭代最折腾的一个——从最开始只是一个简单的 localStorage JSON 数组，
   到 IndexedDB、到 PWA Service Worker、到智能提醒算法……
-  Service Worker 的缓存策略调了好几版（一开始 cache-first 导致更新不及时，改成了 stale-while-revalidate）。
+  Service Worker 的缓存策略调了好几版，最终定的是 Workbox precache + autoUpdate
+  （曾一度在文档里被写成 stale-while-revalidate，但配置里从来没有 runtimeCaching 路由，
+  已更正 —— 详见下方"PWA 缓存策略"）。
   维护周期的数据也是对照 TractorCompare 那边的各机型发动机参数来设的默认值。
 -->
 
 [![Vue 3](https://img.shields.io/badge/Vue-3.5-4fc08d?logo=vuedotjs)](https://vuejs.org)
-[![Vite 8](https://img.shields.io/badge/Vite-8.0-646cff?logo=vite)](https://vitejs.dev)
+[![Vite 8](https://img.shields.io/badge/Vite-8.3-646cff?logo=vite)](https://vitejs.dev)
 [![PWA](https://img.shields.io/badge/PWA-ready-5a0fc8?logo=pwa)](https://web.dev/progressive-web-apps/)
 
 **TractorLog** 是 [TractorTools](https://github.com/seb/tractor-tools) 生态的维护记录模块。它是五个工具里唯一一个"离线优先"的设计——因为维护记录经常在田间地头、信号不好的地方录入，所以从一开始就决定了要走 PWA + IndexedDB 路线。数据完全存储在浏览器本地，不上传任何服务器。如果你在用 [FarmCalc](../farm-calc) 做预算，维护成本可以从这里导出反哺；如果你在 [TractorCompare](../tractor-compare) 看中了一款机型，这里的保养周期可以帮你预估后期养车成本。
+
+## 📸 界面预览
+
+维护日志 —— 记录保养类型、日期、小时数、费用与更换零件：
+
+![TractorLog 维护日志](screenshots/maintenance-log.png)
+
+保养提醒 —— 按上次保养读数与标准周期算出到期与超期项目，严重超期单独标红：
+
+![TractorLog 保养提醒](screenshots/service-alerts.png)
+
+农机管理 —— 多台设备的档案与当前小时数：
+
+![TractorLog 农机管理](screenshots/tractor-list.png)
 
 ---
 
