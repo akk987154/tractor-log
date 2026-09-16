@@ -33,7 +33,7 @@
 - 📋 **维护日志** — 记录每次保养：类型、日期、小时数、费用、更换零件、备注。支持按拖拉机筛选
 - 🚜 **农机管理** — 管理多台拖拉机（名称、品牌、型号、年份、当前小时数），卡片式展示
 - 🔔 **智能提醒** — 不是简单倒计时——算法会查你每台机器的历史记录，算出"上次做了某项保养后跑了多少小时"，对比标准周期来判断到期/超期
-- 📱 **PWA 离线可用** — 安装到手机桌面，Service Worker 用 stale-while-revalidate 策略（优先显示缓存内容，后台静默更新）
+- 📱 **PWA 离线可用** — 安装到手机桌面，Service Worker 预缓存应用外壳（precache + 自动更新）。维护数据存在 IndexedDB，不经过 SW 缓存
 - 💾 **本地存储** — IndexedDB，两个 Object Store（tractors + maintenance），支持索引查询 + 级联删除
 - 🇨🇳 中文界面
 
@@ -63,9 +63,11 @@ npm run preview    # 预览生产构建
 | 液压油更换 | 1,000 小时 | 2,000 小时 |
 | 变速箱保养 | 1,500 小时 | 3,000 小时 |
 | 润滑 | 50 小时 | 100 小时 |
-| 轮胎检查 | 500 小时 | — |
-| 电瓶检查 | 1,000 小时 | — |
-| 皮带更换 | 1,000 小时 | — |
+| 轮胎检查 | 500 小时 | 1,000 小时 |
+| 电瓶检查 | 1,000 小时 | 2,000 小时 |
+| 皮带更换 | 1,000 小时 | 2,000 小时 |
+
+> "严重超期阈值" = 2 × 标准周期，即从上次保养起算已跑满两个周期。
 
 ### 提醒算法
 
@@ -87,13 +89,16 @@ Vue 3 (Composition API) · Vite 8 · vite-plugin-pwa (Workbox) · IndexedDB (原
 
 ### PWA 缓存策略
 
-经过几次踩坑后定型为 **stale-while-revalidate**：
+当前用的是 Workbox **预缓存（precache）+ 自动更新**，不是 stale-while-revalidate：
 
-- 首次加载：正常请求，缓存到 Workbox precache
-- 再次访问：立即返回缓存版本（秒开），同时后台发请求更新缓存
-- 下次打开：显示的是上次后台更新的最新版本
+- `workbox.globPatterns` 把构建产物（js/css/html/svg/manifest）全部列入 precache 清单
+- 资源带 revision 哈希，内容变了才会有新条目
+- `registerType: 'autoUpdate'` 生成 `skipWaiting()` + `clientsClaim()`，新版本部署后接管已打开的页面
+- 导航请求由 `NavigationRoute` 兜底到 `index.html`（已用 `navigateFallbackDenylist` 排除 `/api/`）
 
-之前试过 cache-first，结果用户反馈"添加了拖拉机但列表不更新"——因为 SW 一直返回旧的缓存页面。现在这个策略兼顾了离线速度和数据新鲜度。
+**维护数据不走 SW 缓存** —— 全部存在 IndexedDB，由应用直接读写。所以"添加了拖拉机但列表不更新"如果出现，问题一定在 IndexedDB 读写或 UI 刷新，与 SW 缓存策略无关，改缓存策略是治不好的。
+
+`registerType: 'autoUpdate'` 对当前"单一 bundle、无懒加载路由"的结构是安全的。一旦引入代码分割或懒加载，应改为 `'prompt'` 并配合 `useRegisterSW` 给出更新提示，否则已打开的页面可能请求到已被 `cleanupOutdatedCaches` 清理掉的旧 chunk。
 
 配置在 `vite.config.js` 的 `VitePWA` 插件中，生成 `sw.js` 和 manifest。
 
@@ -106,7 +111,7 @@ Vue 3 (Composition API) · Vite 8 · vite-plugin-pwa (Workbox) · IndexedDB (原
 - 📋 **Maintenance Log** — Record every service: type, date, hours, cost, parts, notes. Filter by tractor.
 - 🚜 **Fleet Management** — Add/manage multiple tractors with card-based UI
 - 🔔 **Smart Alerts** — Algorithm checks each tractor's actual history to determine due/overdue, not just a dumb countdown
-- 📱 **Offline PWA** — Installable on iOS/Android, stale-while-revalidate caching strategy
+- 📱 **Offline PWA** — Installable on iOS/Android, Workbox precache + auto-update (maintenance data lives in IndexedDB, not in the SW cache)
 - 💾 **Local Storage** — IndexedDB, two object stores, indexed queries, cascade deletes
 - 🇺🇸 Chinese UI (code in English)
 
@@ -142,11 +147,30 @@ Vue 3 · Vite 8 · vite-plugin-pwa · IndexedDB
 <details>
 <summary>点击展开</summary>
 
-### v0.4 — PWA 缓存策略修复 + UI 打磨 (当前)
-- Service Worker 从 cache-first 切换到 stale-while-revalidate
+### v0.5 — 脚手架清理 + 数据层可靠性修复 (当前)
+- 删除误引入的 Vite 脚手架样式 `src/style.css`。其中全局的 `h1,h2 { color: var(--text-h) }`
+  配合深色模式下的 `--text-h: #f3f4f6`，会让"🚜 TractorLog"和"🔔 保养提醒"标题变成
+  近白字压近白渐变背景，在系统开启深色模式的设备上实际不可读；同时移除
+  `:root { font: 18px }` 对所有 rem 的 12.5% 放大
+- 保养周期表补齐到全部 8 类（v0.4 声称已补，但代码里只有 5 类，轮胎/电瓶/皮带仍静默失效）
+- 到期分级按 README 口径真正实现：剩余 ≤ 10% 周期为即将到期，剩余 < -周期 为严重超期
+- IndexedDB 改为单例连接 + `onversionchange` 主动关闭 + `onblocked` 报错。
+  原实现每次操作都开新连接且从不 close，多标签页版本升级会无限期挂起且没有任何提示
+- 级联删除改为单事务跨两个 store。原实现开了两个独立事务却在其中一个上 resolve，
+  维护记录可能尚未删完调用方就已刷新，界面残留记录、提前关页面则留下孤儿数据
+- 组件内硬编码的 `indexedDB.open('tractorlog', 1)` 改为调用 db.js 的 `updateTractor`
+- 所有写入加 try/catch 与界面提示（配额超限原先会静默失败、用户毫无反馈）
+- 启动时申请持久化存储，降低浏览器清空全部保养记录的风险
+- 日期按年月日分量解析，避免 `new Date('2024-01-01')` 被当作 UTC 午夜而在西半球时区差一天
+- 删除按钮补 `aria-label` 与 `type="button"`
+- manifest 补 `lang: zh-CN` 与 `id`；precache 清单去掉重复的 favicon.svg（6 项）
+- 新增 vitest 单测 12 例，覆盖周期表完整性与到期分级口径
+
+### v0.4 — PWA 缓存策略修复 + UI 打磨
+- Service Worker 实际为 precache + autoUpdate（原文档误写为 stale-while-revalidate，已更正）
 - 维护记录支持按拖拉机筛选
-- 新增 8 种保养类型（之前只有 5 种）
-- 严重超期红色高亮
+- 新增 8 种保养类型（当时代码只落地了 5 类周期，其余 3 类在 v0.5 补齐）
+- 严重超期红色高亮（v0.5 才真正实现分级判定）
 
 ### v0.3 — 智能提醒 + PWA 安装
 - 提醒算法重写——基于历史记录的实际间隔计算，不再是固定倒计时
@@ -154,7 +178,8 @@ Vue 3 · Vite 8 · vite-plugin-pwa · IndexedDB
 - IndexedDB 从单表拆成双表（tractors + maintenance），加了级联删除
 
 ### v0.2 — IndexedDB 迁移
-- 从 localStorage JSON 迁移到 IndexedDB
+- 从 localStorage JSON 重写为 IndexedDB 存储层（注意：当时没有写数据迁移逻辑，
+  旧 localStorage 里的记录不会被带过来）
 - 添加农机管理页（之前只有维护日志）
 - 基础提醒（简单固定周期）
 

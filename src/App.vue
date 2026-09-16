@@ -1,11 +1,12 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { getTractors, addTractor, deleteTractor, getMaintenance, addMaintenance, deleteMaintenance, getDueSoon, typeLabels } from './db.js'
+import { getTractors, addTractor, updateTractor, deleteTractor, getMaintenance, addMaintenance, deleteMaintenance, getDueSoon, requestPersistence, typeLabels } from './db.js'
 
 const tractors = ref([])
 const maintenance = ref([])
 const dueItems = ref([])
 const tab = ref('log')
+const errorMsg = ref('')
 
 const showAddTractor = ref(false)
 const newTractor = ref({ name: '', brand: '', model: '', year: 2022, currentHours: 0 })
@@ -23,47 +24,70 @@ const tabs = [
 ]
 
 async function loadData() {
-  tractors.value = await getTractors()
-  maintenance.value = await getMaintenance()
-  dueItems.value = await getDueSoon()
+  try {
+    tractors.value = await getTractors()
+    maintenance.value = await getMaintenance()
+    dueItems.value = await getDueSoon()
+    errorMsg.value = ''
+  } catch (e) {
+    errorMsg.value = `读取本地数据失败：${e?.message || e}`
+  }
 }
 
 async function handleAddTractor() {
   if (!newTractor.value.name) return
-  await addTractor(newTractor.value)
-  newTractor.value = { name: '', brand: '', model: '', year: 2022, currentHours: 0 }
-  showAddTractor.value = false
-  await loadData()
+  try {
+    await addTractor(newTractor.value)
+    newTractor.value = { name: '', brand: '', model: '', year: 2022, currentHours: 0 }
+    showAddTractor.value = false
+    await loadData()
+  } catch (e) {
+    // 配额超限等情况原先会被吞掉：await 没有 try/catch，写入静默失败且界面无任何反馈
+    errorMsg.value = `保存农机失败（可能是本地存储空间已满）：${e?.message || e}`
+  }
 }
 
 async function handleDeleteTractor(id) {
   if (!confirm('确定删除该农机及其所有维护记录吗？')) return
-  await deleteTractor(id)
-  await loadData()
+  try {
+    await deleteTractor(id)
+    await loadData()
+  } catch (e) {
+    errorMsg.value = `删除农机失败：${e?.message || e}`
+  }
 }
 
 async function handleAddMaint() {
   if (!newMaint.value.tractorId) return
   const tid = Number(newMaint.value.tractorId)
-  await addMaintenance({ ...newMaint.value, tractorId: tid })
-  const t = tractors.value.find(tr => tr.id === tid)
-  if (t) {
-    const idx = indexedDB.open('tractorlog', 1)
-    idx.onsuccess = () => {
-      const db = idx.result
-      const tx = db.transaction('tractors', 'readwrite')
-      tx.objectStore('tractors').put({ ...t, currentHours: Number(newMaint.value.hours) || t.currentHours })
+  try {
+    await addMaintenance({ ...newMaint.value, tractorId: tid })
+
+    // 同步农机的当前小时数。统一走 db.js 的 updateTractor，
+    // 不再在组件里重复 indexedDB.open('tractorlog', 1)（版本号硬编码，
+    // 将来 db.js 升版会让这里静默失效，且没有 onerror 处理）
+    const t = tractors.value.find(tr => tr.id === tid)
+    const hours = Number(newMaint.value.hours)
+    if (t && Number.isFinite(hours) && hours > 0) {
+      await updateTractor(tid, { currentHours: hours })
     }
+
+    newMaint.value = { tractorId: tid, type: 'oil', date: new Date().toISOString().split('T')[0], hours: 0, cost: 0, notes: '', parts: '' }
+    showAddMaint.value = false
+    await loadData()
+  } catch (e) {
+    errorMsg.value = `保存维护记录失败（可能是本地存储空间已满）：${e?.message || e}`
   }
-  newMaint.value = { tractorId: tid, type: 'oil', date: new Date().toISOString().split('T')[0], hours: 0, cost: 0, notes: '', parts: '' }
-  showAddMaint.value = false
-  await loadData()
 }
 
 async function handleDeleteMaint(id) {
   if (!confirm('确定删除该记录？')) return
-  await deleteMaintenance(id)
-  await loadData()
+  try {
+    await deleteMaintenance(id)
+    await loadData()
+  } catch (e) {
+    errorMsg.value = `删除记录失败：${e?.message || e}`
+  }
 }
 
 function getTractorName(id) {
@@ -71,9 +95,20 @@ function getTractorName(id) {
   return t ? `${t.name} (${t.brand} ${t.model})` : '未知农机'
 }
 
-function fmtDate(d) { return d ? new Date(d).toLocaleDateString('zh-CN') : '' }
+// 按年月日分量解析。new Date('2024-01-01') 会被当作 UTC 午夜，
+// 在西半球时区会显示成前一天；北京时区恰好正确，所以这个 bug 很难被发现
+function fmtDate(d) {
+  if (!d) return ''
+  const [y, m, day] = String(d).split('-').map(Number)
+  if (!y || !m || !day) return String(d)
+  return `${y}年${m}月${day}日`
+}
 
-onMounted(loadData)
+onMounted(async () => {
+  // 申请持久化存储，降低浏览器在空间紧张时清空全部保养记录的风险
+  await requestPersistence()
+  await loadData()
+})
 </script>
 
 <template>
@@ -82,6 +117,8 @@ onMounted(loadData)
       <h1>🚜 TractorLog</h1>
       <p>农机维护日志 · 离线可用 · 数据存于本地</p>
     </header>
+
+    <p v-if="errorMsg" class="err" role="alert">{{ errorMsg }}</p>
 
     <nav class="tabs-bar">
       <button v-for="t in tabs" :key="t.key" class="tb" :class="{ active: tab === t.key }" @click="tab = t.key">
@@ -121,7 +158,7 @@ onMounted(loadData)
 
         <div class="list">
           <div v-for="m in maintenance" :key="m.id" class="mcard">
-            <div class="mrow"><span class="tag">{{ typeLabels[m.type] || m.type }}</span><span class="date">{{ fmtDate(m.date) }}</span><button class="del" @click="handleDeleteMaint(m.id)">🗑️</button></div>
+            <div class="mrow"><span class="tag">{{ typeLabels[m.type] || m.type }}</span><span class="date">{{ fmtDate(m.date) }}</span><button type="button" class="del" :aria-label="`删除 ${fmtDate(m.date)} 的${typeLabels[m.type] || m.type}记录`" @click="handleDeleteMaint(m.id)">🗑️</button></div>
             <div class="mbody">
               <p><strong>农机:</strong> {{ getTractorName(m.tractorId) }}</p>
               <p v-if="m.hours"><strong>时数:</strong> {{ m.hours }}h</p>
@@ -153,7 +190,7 @@ onMounted(loadData)
 
         <div class="grid2">
           <div v-for="t in tractors" :key="t.id" class="tcard">
-            <div class="mrow"><strong>{{ t.name }}</strong><button class="del" @click="handleDeleteTractor(t.id)">🗑️</button></div>
+            <div class="mrow"><strong>{{ t.name }}</strong><button type="button" class="del" :aria-label="`删除农机 ${t.name}`" @click="handleDeleteTractor(t.id)">🗑️</button></div>
             <p>{{ t.brand }} {{ t.model }}</p>
             <p>{{ t.year }}年 · {{ t.currentHours?.toLocaleString() || 0 }}h</p>
           </div>
@@ -166,8 +203,8 @@ onMounted(loadData)
         <p class="sub">基于当前小时数和保养周期自动计算</p>
         <div v-if="dueItems.length === 0" class="empty">✅ 所有保养项目均未到期</div>
         <div class="list">
-          <div v-for="item in dueItems" :key="`${item.tractorId}-${item.type}`" class="acard" :class="{ overdue: item.overdue }">
-            <div class="mrow"><span class="tag">{{ item.tractorName }}</span><span>{{ item.typeLabel }}</span><span class="badge" :class="{ overdue: item.overdue }">{{ item.overdue ? `⚠️ 超期 ${Math.abs(item.remaining)}h` : `⏳ 剩余 ${item.remaining}h` }}</span></div>
+          <div v-for="item in dueItems" :key="`${item.tractorId}-${item.type}`" class="acard" :class="{ overdue: item.overdue, severe: item.severe }">
+            <div class="mrow"><span class="tag">{{ item.tractorName }}</span><span>{{ item.typeLabel }}</span><span class="badge" :class="{ overdue: item.overdue, severe: item.severe }">{{ item.overdue ? `⚠️ 超期 ${Math.abs(item.remaining)}h` : `⏳ 剩余 ${item.remaining}h` }}</span></div>
             <div class="sub">当前 {{ item.currentHours }}h · 上次 {{ item.lastHours }}h · 周期 {{ item.interval }}h</div>
           </div>
         </div>
@@ -215,4 +252,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: #16a34a
 .acard.overdue { border-color: #fca5a5; background: #fef2f2; }
 .badge { font-size: 0.75rem; padding: 0.125rem 0.5rem; border-radius: 1rem; background: #f0fdf4; color: #16a34a; }
 .badge.overdue { background: #fef2f2; color: #dc2626; }
+/* 严重超期：已超出整整一个保养周期 */
+.acard.severe { border-color: #dc2626; background: #fee2e2; }
+.badge.severe { background: #dc2626; color: #fff; }
+.err { background: #fef2f2; border: 1px solid #fca5a5; color: #b91c1c; border-radius: 0.5rem; padding: 0.625rem 0.875rem; font-size: 0.8125rem; margin: 0.75rem 0; }
+button { font-family: inherit; }
 </style>
